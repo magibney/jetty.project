@@ -102,6 +102,7 @@ public class QueuedThreadPool extends ContainerLifeCycle implements ThreadFactor
     private final ThreadFactory _threadFactory;
     private String _name = "qtp" + hashCode();
     private int _idleTimeout;
+    private int _shrinkInterval = -1;
     private int _maxThreads;
     private int _minThreads;
     private int _reservedThreads = -1;
@@ -367,6 +368,30 @@ public class QueuedThreadPool extends ContainerLifeCycle implements ThreadFactor
         ReservedThreadExecutor reserved = getBean(ReservedThreadExecutor.class);
         if (reserved != null)
             reserved.setIdleTimeout(idleTimeout, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * @return the minimum interval at which the thread count will be reduced due to idleTimeout
+     */
+    @ManagedAttribute("minimum interval between thread removals ms")
+    public int getShrinkInterval()
+    {
+        return _shrinkInterval < 0 ? _idleTimeout : _shrinkInterval;
+    }
+
+    /**
+     * <p>Set the minimum interval (ms) between thread removals.</p>
+     * <p>Controls the rate at which idle threads will be removed from the pool.</p>
+     *
+     * @param shrinkInterval the minimum interval between thread removals in ms
+     */
+    public void setShrinkInterval(int shrinkInterval)
+    {
+        _shrinkInterval = shrinkInterval;
+        // TODO: do we need to pass shrinkInterval along to reserved pool?
+//        ReservedThreadExecutor reserved = getBean(ReservedThreadExecutor.class);
+//        if (reserved != null)
+//            reserved.setShrinkInterval(shrinkInterval, TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -1025,6 +1050,7 @@ public class QueuedThreadPool extends ContainerLifeCycle implements ThreadFactor
             try
             {
                 Runnable job = null;
+                long idleBaseline = NanoTime.now();
                 while (true)
                 {
                     // If we had a job,
@@ -1049,11 +1075,13 @@ public class QueuedThreadPool extends ContainerLifeCycle implements ThreadFactor
                         {
                             // No job immediately available maybe we should shrink?
                             long idleTimeout = getIdleTimeout();
+                            long shrinkInterval = getShrinkInterval();
                             if (idleTimeout > 0 && getThreads() > _minThreads)
                             {
-                                long last = _lastShrink.get();
+                                long last;
                                 long now = NanoTime.now();
-                                if (NanoTime.millisElapsed(last, now) > idleTimeout && _lastShrink.compareAndSet(last, now))
+                                if (NanoTime.millisElapsed(idleBaseline, now) > idleTimeout &&
+                                    NanoTime.millisElapsed(last = _lastShrink.get(), now) > shrinkInterval && _lastShrink.compareAndSet(last, now))
                                 {
                                     if (LOG.isDebugEnabled())
                                         LOG.debug("shrinking {}", QueuedThreadPool.this);
@@ -1076,6 +1104,7 @@ public class QueuedThreadPool extends ContainerLifeCycle implements ThreadFactor
                         if (LOG.isDebugEnabled())
                             LOG.debug("run {} in {}", job, QueuedThreadPool.this);
                         runJob(job);
+                        idleBaseline = NanoTime.now();
                         if (LOG.isDebugEnabled())
                             LOG.debug("ran {} in {}", job, QueuedThreadPool.this);
                     }
